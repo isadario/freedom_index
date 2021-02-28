@@ -1,0 +1,777 @@
+---
+title: "Human Freedom Index"
+author: "Barbara Innamorato & Isabella Dario"
+date: "12/6/2020"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=10, fig.height=6) 
+```
+## DEFINITION OF THE PROBLEM AND INTRODUCTION TO THE DATASET 
+We would like to understand which are the most influential factors affecting the enjoyment of freedom and to formulate a prediction for the human freedom index in Europe. 
+
+To do so, we use the 2019 dataset available on [Kaggle][id] which spans from 2008 to 2017. It was created by the CATO institute and measures the Human Freedom on a global level using indicators both of personal (pf) and economic freedom (ef) in the following areas: "Rule of Law"(rol); "Security and Safety"(ss); "Movement"; "Religion"; "Association, Assembly, and Civil Society"; "Expression and Information"; "Identity and Relationships"; "Size of Government"; "Legal System and Property Rights"; "Access to Sound Money"; "Freedom to Trade Internationally";  "Regulation of Credit, Labor, and Business". 
+The index and the predictors are measured on a scale from 0 to 10, with 10 being the highest. 
+The dataset includes 162 countries from 2008 and 2017 but after a brief exploration of the index on a global level our analysis will focus on Europe and on 2016(for training) and 2017(for testing), the most recent data available. 
+
+As we can see from the dataset and the large number of indicators being taken into account, we can suppose that the enjoyment of freedom will depend on a broad range of factors yet we would like to identify those that play the greatest role and use these features to predict the freedom level in Europe in 2017. 
+Hence, our goal is: 
+1) to identify *the determinants of freedom* in Europe (this information could be used by government agencies, policy makers and advocacy groups to have a clear understanding of which are the dimensions to be tackled first in order to improve the enjoyment of freedom) 
+2) *develop a prediction model* for the freedom index (again, it could be useful to the same subjects cited before as it would represent a helpful tool in monitoring the freedom index evolution - especially)
+
+Concretely, these objectives will be achieved by: 
+- carrying out PCA which will allows us to carry out some exploratory analysis and solve the multicollinearity issue. We will then use Partial Least Square Regression to formulate a prediction for 2017 freedom index. 
+- regularizing the coefficients with LASSO and obtaining a prediction for 2017 recording the test error 
+- comparing these algorithms with ordinary decision tree regression, then after bagging and by growing random forests. 
+
+Eventually, we will evaluate the different prediction algorithms in terms of accuracy, time consumed and interpretability of the results. 
+
+
+## DATA PREPARATION 
+While skimming the dataset we noticed a lot of blank cells so we transformed these in NA ones during the loading so that they are properly read from the beginning.  
+```{r loading data, echo=TRUE, results='hide'}
+df <- read.csv("freedom_2019.csv", stringsAsFactors = FALSE, na.strings=c("","-","NA"))
+dim(df) 
+```
+```{r info on data, echo=FALSE, results='hide'}
+str(df)
+df$year <- as.factor(as.character(df$year)) 
+summary(df)
+colnames(df[5:120])  
+```
+
+
+```{r head, echo=FALSE, results='hide'}
+head(df, n=8)
+```
+
+First we deal with missing values, 
+```{r na checking}
+any(is.na(df))
+```
+
+we count them in each column.
+```{r checking per variable, echo=TRUE, results='hide'}
+sapply(df, function(x) sum(is.na(x)))
+```
+
+Now before taking any decision on how to deal with these we check their distribution among variables:
+```{r percentage of na, results='hide', echo=FALSE}
+percentage <- function(x){sum(is.na(x))/length(x)*100} 
+apply(df,2,percentage) 
+```
+We can notice from here that the missing values don't distribute evenly, there are some features that have all data missing (100% NA eg. "political operate", "political establish") and in other columns percentage of missing values goes up to 80%.
+
+If missing values make up more than 30% of the data for a feature, then said variable is not conveying much information so we can safely discard that. For the others we substitute them with the median as it is a more robust measure of central tendency with respect to the mean.
+
+```{r cleaning, echo=F, results='hide'}
+per <- apply(df,2,percentage)
+missing <- which(per >= 30) 
+df <- df[-missing]
+pref <- colnames(df[5:106]) 
+for(i in 1:length(pref)+4){
+  df[is.na(df[,i]), i] <- median(df[,i], na.rm = TRUE)
+}   
+```
+
+Now our dataset (global, all years) is clean from missing values but we also want to eliminate "summary" variables and keep only the "pure" predictors. In fact, we can eliminate these features since they are a combination of other ones so they're not providing any additional information. Hence, here by looking at the dataset we remove from the dataset all non summary variables keeping only the freedom score and pure predictors.
+
+```{r eliminating summary variables, echo=TRUE}
+df$hf_rank <- NULL #6
+df$hf_quartile <- NULL  #7
+df$pf_ss_disappearances <- NULL #15 perchè è la summary di _disap,_violent,_organized, _fatalities and _injuries 
+df$pf_ss_women <- NULL #18 perchè è la summary di women_fgm,_inheritance
+df$pf_ss <- NULL #19 perchè è summary di livello superiore
+df$pf_movement <- NULL #23 "
+df$pf_religion <- NULL #27 "
+df$pf_association <- NULL #33
+df$pf_expression <- NULL #41
+df$pf_identity_sex <- NULL #44 perchè è sumarry di _male e _female
+df$pf_identity <- NULL #46 summary di livello superiore
+df$pf_score <- NULL #47 summary di tutti i personal
+df$pf_rank <- NULL #48 rank in base a personal factors 
+            
+df$ef_government_tax <- NULL #54 summary di _payroll e _income
+df$ef_government <- NULL #56 summary di livello superiore
+df$ef_legal <-  NULL #67 summary di _judicial,..,_gender
+df$ef_money <- NULL #72 summary di _growth,..,_currency
+df$ef_trade_tariffs <- NULL #76 summary di _revenue,_mean,_sd
+df$ef_trade_regulatory <- NULL #79 summary di _nontariff,_compliance
+df$ef_trade_movement <- NULL #84 summary di _capital,_foreign,_unit
+df$ef_trade <- NULL #85 summary di livello superiore 
+df$ef_regulation_credit <- NULL #89 summary di _ownership, _private, _interest
+df$ef_regulation_labor <- NULL #96 summary di _minwage,..,_conscription
+df$ef_regulation_business <- NULL #103 summary di _adm, _bureaucracy, .., ,_compliance
+df$ef_score <- NULL  #105 same as for pf 
+df$ef_rank <- NULL #106
+
+dim(df)  #1620 x 80 var
+```
+
+So now here we have our clean dataset that includes all 162 countries for 10 years (2008-2017) and 80 variables: 4 fixed, 1 response variable and 75 pure predictors.
+
+## DATA VISUALIZATION 
+We want to get a feeling of the behavior of the freedom index globally in 2016 so we construct the map\
+
+```{r freedom index on a global level, echo=FALSE, results='hide', message=FALSE, warning=FALSE, fig.align='center'}
+library("ggmap")
+library("ggplot2")
+theme_set(theme_bw())
+library("sf")
+library("rnaturalearth")
+library("rnaturalearthdata")
+library("maps")
+
+theme_set(theme_bw())
+HFI2016 <- subset(df, subset=year==2016) #take this dataset (our countries)
+HFscore_percountry <- HFI2016[c(3,5)] 
+dim(HFI2016)
+worldmap<- map_data("world")    #and this dataset (that of the general countries)
+str(worldmap)
+ourmap <- map_data("world", region = HFscore_percountry$countries)
+ourmap   #select only the countries that are in our dataset
+worldmap <- merge(ourmap, HFscore_percountry, by.x = "region",by.y = "countries")
+str(worldmap)
+
+worldmap <- worldmap[order(worldmap$group,worldmap$order),] #questo serve perchè sennò non identifica i confini  
+
+ggplot(worldmap, aes(x=long, y=lat, group=group)) + 
+  geom_polygon(aes(fill=hf_score), color="black") + 
+  ggtitle("                        World Map")+
+  coord_map("ortho",orientation=c(30,20,0))
+```
+
+Here we notice that Europe tends to enjoy a particularly high level of freedom, so we visually compare the index at a Global and European level:\ 
+
+```{r density plot, echo=FALSE,message=FALSE,warning=FALSE, fig.align='center'}
+library(dplyr)
+library(ggplot2)
+dataset <- mutate_at(df, 'hf_score', as.factor)
+
+Europe <- df[(df$region=="Eastern Europe"|df$region=="Western Europe"),]
+
+#by default all densities are scaled to unit area so we should safely proceed like this
+data <- rbind(data.frame(x= df$hf_score,location="World" ),
+              data.frame(x= Europe$hf_score,location="Europe"))
+
+comparison <- ggplot(data, aes(x, group=location,col=location)) +
+  geom_density(position = "dodge") +
+  ggtitle("              Global vs European Freedom distribution") +
+  labs(x="Human Freedom Index")+
+  scale_color_manual("Location", values=c("black","blue"))   
+
+comparison
+```
+
+It is noticeable that on a global level there are 2 peaks, freedom index tends to be either very high (around 8.5) or kind of sufficient (about 6.5) with this second option being the most prominent. So there is disparity in the enjoyment of freedom throughout the world. In particular, it can be seen how the average freedom index in Europe is `r round(mean(Europe$hf_score),3)`while in the world is `r round(mean(df$hf_score),3)`so in Europe we enjoy relatively more freedom than those in the rest of the world and so with our analysis we would like to identify the sources of this greater level of freedom.
+
+Yet, it is also important to point out that also in Europe the condition is not homogeneous as there are still some countries that have a freedom index even lower than the global average as one can see here:\
+
+```{r freedom in Europe for 2016, before and after years, echo=F,message=FALSE, warning=FALSE, fig.align='center'}
+library(scales)
+library(ggplot2)
+library(plotly)
+
+years <- Europe[Europe$year==2015 | Europe$year==2016 | Europe$year==2017,]
+gg <- ggplot(years, aes(x = hf_score, y=countries)) + 
+  geom_point(aes(col=year), size=3) + 
+  labs(title="European Freedom Scores in three Years", y="Countries", x="Freedom index")
+ggplotly(gg)
+```
+Overall, we can see that for almost all countries the Freedom score has diminished throughout the years or remained the same (Sweden, Italy) so we should keep that into account when using 2017 for validation. 
+However, it is noticeable that this decreasing trend is disregarded by some countries that, instead, show a consistent increase like Ukraine, Russia, Moldova and Albania which are the former Soviet republics. Despite these countries have the lowest freedom index overall (we will show this later on in this analysis), this time window hints at a positive trend for the future. 
+
+
+## 1. MOST INFLUENTIAL VARIABLES FOR FREEDOM - UNSUPERVISED 
+Now we focus on 2016 for further analysis and we want to explore **the most influential factors determining freedom on the european level** explaining the differences inside the continent and with the rest of the world. 
+
+### Preparing data 
+The focus is on European countries in order to understand which variables led to this high Freedom index with respect to the rest of the world. 
+```{r eu2016 and 2017 dataframe identification, results='hide', echo=TRUE}
+Europe <- df[(df$region=="Eastern Europe"|df$region=="Western Europe"),]
+eu2016 <- Europe[Europe$year==2016,]  #40 obs x 80 var including hf_score (response variable)
+eu2017 <- Europe[Europe$year==2017,]  #40 obs x 80 var including hf_score (response variable)
+```
+
+```{r Fixing layout for 2016, results='hide', echo=TRUE}
+rownames(eu2016) <- eu2016$countries    
+eu2016$countries <- NULL                
+eu2016[,c(1,2,3)] <- NULL 
+dim(eu2016) #[1]  40 x76var
+
+equal2016 <- which(apply(eu2016, 2, var)==0)
+eu2016 <- eu2016[-equal2016]
+dim(eu2016) #40 x72var
+```
+
+```{r  layout for 2017, results='hide',echo=TRUE}
+rownames(eu2017) <- eu2017$countries
+eu2017$countries <- NULL
+eu2017[,c(1,2,3)] <- NULL 
+dim(eu2017) #[1]  40 x76var
+
+equal2017 <- which(apply(eu2017, 2, var)==0)
+eu2017 <- eu2017[-equal2017]
+dim(eu2017) #40 x73var
+```
+We have eliminated the variables in which the variance is 0 (to avoid the issue of having standard deviation 0) but these are different between 2016 and 2017. In fact, in the latter we eliminate the same variables of 2016 plus one, so we identify this 
+
+```{r comparison 2016 vs 2017, echo=FALSE, warning=FALSE}
+equal2016 == equal2017
+```
+and from the comparison results that the difference is in ef_trade_black which is kept in 2017 but not in 2016. Since data of 2017 are used only for testing and not training we eliminate the variable. In fact, the vector of values of ef_trade_black  variable would not be used anyway since we are employing only 2016 data for training the model and in this way we have both dataset in the same dimension (needed for regression).
+```{r dealing with different number of columns among the 2, results='hide',echo=FALSE}
+dim(eu2017)
+```
+
+```{r dealing with different number of columns among the 2 second, echo=TRUE}
+eu2017$ef_trade_black <- NULL
+dim(eu2017) 
+```
+**Remark**: we don't scale variables (both indep and dep) because they are already in the same unit hence if we did scale them we would end up having an artificial variance not present originally that could deplete our analysis. 
+
+So, our ultimate objective is to perform a regression on the data available to formulate a prediction for the freedom index. Yet, as we can see below we definitely cannot perform ordinary least square because variables are correlated so assumptions for linear regression are not holding. 
+```{r training e test set, echo=TRUE}
+#no seed because we are taking whole datasets, not portions so there's no randomness 
+allena.set <- eu2016
+testa.set <- eu2017
+```
+
+We are not able to get a linear model because the fact that variables are correlated leads to the impossibility of a unique estimation for the coefficients. So here we investigate about the correlation between the variables   
+```{r reg lin, echo=TRUE, results='hide',warning=FALSE}
+lin.complete <- glm(hf_score ~ ., data= allena.set )
+summary(lin.complete) 
+```
+We are not able to get a linear model because the fact that variables are correlated leads to the impossibility of a unique estimation for the coefficients. So here we investigate about the correlation between the variables\
+
+```{r multicollinearity focus, echo=FALSE,warning=FALSE, message=FALSE, fig.align='center'}
+library(corrplot)
+correlation <- cor(allena.set) 
+corrplot(correlation, method="circle",type="lower",tl.cex=0.5, tl.srt=20)
+```
+
+It is clear from the correlation plot that there is a great level of correlation among variables (eg.rule of law and expression_control, legal_judicial,legal_protection, legal_integrity and so on for positive correlation and government_consumption or government tax income in the case of negative correlation. 
+So we have a dataset with more variables than observations (72 variables for 40 countries) and where variables are correlated. 
+
+So first we perform Principal Component Analysis to decorrelate variables. 
+
+### PRINCIPAL COMPONENTS ANALYSIS
+Actually, we perform PCA with 3 objectives in mind:\ 
+1) *data exploration*\ 
+2) *dimension reduction* (we have many variables so we would like to project our data in a subspace of reduced dimensions while at the same time preserving the information provided)\ 
+3) *data preprocessing* to prepare it for regression eliminating the problem of collinearity (by fitting a linear regression model on the principal components -which are orthogonal/uncorrelated - instead of all variables)\ 
+
+```{r quindi facciamo PCA single value decomposition, results='hide',message=FALSE,warning=FALSE}
+library(pls)
+start.time.svd <- Sys.time()
+pc.svd <- prcomp(eu2016[,-1], center = TRUE) 
+
+print(pc.svd)
+end.time.svd <- Sys.time()
+time.pc.svd <- end.time.svd - start.time.svd
+summary(pc.svd)
+```
+```{r time and number of components, echo=TRUE}
+print(time.pc.svd)
+print(paste("Number of components is:", dim(pc.svd$x)[2]))
+```
+
+From the output we see that we obtained 40 principal components so we actually reduced the dimension of the feature space since we went from 72 variables to 40 components, almost half the dimension (**Remark**: even though we know that the number of pc should be less or equal to the minimum between the number of observation and the number of variables and so it should be 40 or less, in this case it is 40 so the maximum of the possible values so the dimension is reduced but still rather great).\ 
+
+Now we have these 40 principal components that are a linear combinations of the original variables but we need to identify how many to consider. To do so we have 3 options:\  
+1) we choose a threshold of variance to be explained (say 80%) and we include all the components necesarry to surpass said threshold (in that case we should include 9 components to explain 81.3% of variance)\
+2) by cross validation (we will do this directly with partial least squares later on)\
+3) with the elbow method\ 
+Here we choose the elbow method so we display the scree plot which also visually helps us in monitoring the portion of variance being explained by each component\
+
+```{r how many components to consider and scree plot , echo= FALSE, fig.align='center', message=FALSE, warning=FALSE}
+pc.svd.var <- pc.svd$sdev^2 
+pve <- pc.svd.var/sum(pc.svd.var) 
+
+library(factoextra)
+p <- fviz_eig(pc.svd,
+                    addlabels = T, 
+                    barcolor = "#F37B59",
+                    barfill = "#F37B59", 
+                    linecolor = "#2e4057", 
+                    choice = "variance", 
+                    ncp=40,
+                    ylim=c(0,40), xlim=c(0,45))
+
+dff <- data.frame(x=1:length(pve), y=cumsum(pve)*100/4)
+p <- p + 
+  geom_point(data=dff, aes(x, y), size=2, color="#2e4057") +
+  geom_line(data=dff, aes(x, y), color="#2e4057") +
+  scale_y_continuous(sec.axis = sec_axis(~ . * 4, 
+                                         name = "Cumulative proportion of Variance Explained") )
+print(p)
+```
+
+The elbow lies on the 3rd component so by considering just 3 components we are already explaining 61.7% of the variance. This means that even though we have 40 principal components (kind of many) we don't really need all of them because we are explaining most of the variance already with 3 components.\ 
+
+So we keep these first 3 components and we look at which variables play the greatest role inside them: 
+```{r analysis of the variables inside the components,echo=FALSE, results='hide'}
+pc.svd$rotation 
+
+loadings_scores <- pc.svd$rotation[,1]     #rotation=matrice dei pesi dei fattori
+columns_scores <- abs(loadings_scores)
+columns_scores_rank <- sort(columns_scores, decreasing = T)
+top10_col <- names(columns_scores_rank[1:10])
+top10_col # variabili più pesanti nel primo components
+first.comp <- as.matrix(pc.svd$rotation[top10_col,1])
+
+loadings_scores2 <- pc.svd$rotation[,2]
+columns_scores2 <- abs(loadings_scores2)
+columns_scores_rank2 <- sort(columns_scores2, decreasing = T)
+top10_col2 <- names(columns_scores_rank2[1:10])
+top10_col2 #variabili più pesanti nel secondo component
+second.comp <- as.matrix(pc.svd$rotation[top10_col2,2])
+
+loadings_scores3 <- pc.svd$rotation[,3]
+columns_scores3 <- abs(loadings_scores3)
+columns_scores_rank3 <- sort(columns_scores3, decreasing = T)
+top10_col3 <- names(columns_scores_rank3[1:10])
+top10_col3 #variabili più pesanti nel terzo component
+third.comp <- as.matrix(pc.svd$rotation[top10_col3,3])
+```
+
+```{r summary components variables, echo=FALSE}
+#cbind(top10_col, top10_col2, top10_col3)
+first_30 = data.frame(top10_col, top10_col2, top10_col3)
+colnames(first_30) <- c("PC1","PC2","PC3")
+
+knitr::kable(first_30)
+
+```
+
+These variables, especially for the 1st component, can be considered as the most important features in the determination of the freedom score\ 
+
+So here we want to identify what distinguish a component from another, giving kind of a label to each of the first three.\ 
+
+The 1st COMPONENT seems to be dominated by personal factors suggesting that the dimension that most impacts on the perception of freedom is afferent to the subject, to each **individual**.\ 
+More specifically, we have that the control (expression_control) and the influence (expression_influence) over the freedom of expression is very important as well as the possibility to move freely(movement_domestic) and to form associations (association_political).\ 
+In this component there are also 2 economic variables and we focus especially on the first (highest corr) which is  government_tax_income. We interpret this as the taxation on personal income (as opposed to government_tax_payroll- the other subpredictor of the more general sphere of tax- which is the taxation on companies). The fact that income more than payroll (in the 3rd comp) plays a bigger role signals once again that it's the indivual sphere that provides more information in the variability of the data and eventually in the influence of the enjoyment of freedom.\ 
+However, the fact that income here in the unsupervised analysis is seen as a rather important variable whereas in the supervised one (we will see later on) doesn't play the same great role could also be due to a high disparity of income which would lead to a greater variance and so eventually to a greater role in the PCA.\ 
+
+The 2nd COMPONENT and 3dr COMPONENT instead are more afferent to a **collective** sphere with the former belonging to a more *legal* dimension (judicial,courts,protection,integrity, bribes) and the latter to an *economic* one (trade, labor, payroll are all affering to a more socioeconomical sphere). \ 
+
+So:\ 
+1. first component --> *individual*\ 
+2. second component --> *collective legal*\ 
+3. third component --> *collective economic* 
+
+**Remark**:\  
+1) overall, we can notice relatively small coefficients (first is 23%) so in this setting we could interpret this saying that freedom is the result of a complex relationship between a broad range of factors, without any particular feature dominating. Yet, these low coefficients are also linked to the fact that our variables are homogeneous for unit of measure and this leads to low variance so there is not a variables that can prevail in the pca.\  
+2) there's no description of the variables provided with the dataset, we can only interpret them so our analysis is based on the meaning that we give to each variable  
+
+Now that we have identified the principal components to keep into account and analysed the variables, we want to see how the 40 European countries place with respect to the principal components so we plot the PCA.\ 
+```{r biplot, echo=F,fig.align='center'}
+pc.svd$x <- - pc.svd$x
+fviz_pca_biplot(pc.svd, repel = TRUE)
+```
+
+The biplot allows us to visualize how the countries behave with respect to the variables and how they relate to one another getting to know more about the source of the difference in freedom in Europe.\  
+
+For example, we have that the taxation on income contributes to the first component, with higher values in that variable moving the countries to the right on this plot. So here Ukraine, Russia, Belarus and Moldova (ex soviet republics all scoring 10) are dragged to the right by this variable (this again could be also due to the fact that because of the high variability of the values in the vector of the variable this play a greater role and then this is reflected in the rest of the analysis, but still we think it's reasonable considering how countries get grouped by this analysis).\ 
+Then despite this high score in the variables of the first principal component, the overall freedom in these countries is decreased by their low value with respect to variables in the 2nd component (the "collective legal" one). This brings them to be place on the bottom right corner clearly separated by the rest of Europe.\ 
+
+Then we focus our attention on the left-hand side of the plot because on this portion we can see that countries are very close to each other without a straightforward distinction as happened for the ex soviet republics. In fact, here most of the variables are contributing to the PC2 so inevitably most of the countries will be also dragged to the left. Overall, we could say that PC2 helps us in distinguishing between northern countries and southern ones plus balkans/eastern Europe.\ 
+
+To further break down the left hand side compact block we visualize the situation with all 3 components: 
+```{r 3D graph scoreplot}
+# #grafico tridimensionale delle prime 3 pc -->  
+# plot3d(pc.svd$x[, 1:3], size = 5)
+# texts3d(pc.svd$x[, 1:3], texts = rownames(eu2016), adj = c(0.5,0))
+# play3d(spin3d(axis = c(1, 1, 1), rpm = 15), duration = 10)
+
+```
+
+The 3D scoreplot helps us in understading even more the relationship between countries. In particular, simplifying a tad, it allows us to distinguish between between northern and southern countries by using variables related to the socioeconomial dimension.\ 
+
+Here in another graph we display the cluster of the countries not to pile up information in the biplot: \ 
+```{r fast clustering visualization, echo=FALSE, results='hide'}
+fviz_nbclust(allena.set[,-1], kmeans, method = "wss") #says k = 3 better with elbow method
+comp <- data.frame(pc.svd$x[,1:3]) # I use 3 components because this was identified as best value 
+k <- kmeans(comp, 3, nstart=20, iter.max=100)
+fviz_cluster(k, data = allena.set[,-1])
+```
+
+and here we can see clearly how the countries relate to one another and it is noticeable that even with just 3 components we are already picturing a legitimate image of the different groups that there are in Europe.\ 
+
+To sum up, the biplot allowed us to identify how the countries behave with respect to the components and eventually to the variables hence helping us to spot the sources of difference in the freedom index inside Europe. To identify the same information on a global level we can exploit the fact that the 1st component is the one that explains the greatest percentage of variance. Hence, variables inside this first component (first.comp) will be those playing a greater role in the generation of difference in the freedom level on a global scope. As a consequence, it appears that government agencies and policy maker of countries outside Europe should probably focus more on the "individual" factors for letting their citizens enjoy full freedom.\ 
+
+**Remark**: this analysis is not exhaustive and sensible to the fact that we have a lot of predictors explaining each a small percentage of variance which brings most of the variables and hence the countries to left. With more domaninant predictors interpretation would have been more straightforward yet we still believe that what is being pictured is a legitimate representation of the situation in Europe. 
+
+Now, up to here we have used PCA mainly for data exploration and for identifying most important variables but we said from the beginning that we also want to form a prediction. Here PCA allows us to decorrelate variables and perform regression.\ 
+We do this both with Principal Component Regression (present in the other markdown) and Partial Least square but here we include only PLS which has proven more performant.\ 
+
+**Remark**: it's true that with pca so by moving from p+1 parameters to L+1 parameters with the change of basis we are introducing bias in the coefficients of the linear combination, however this cost is offset by the reduction of variance that allows us to overcome collinearity and perform a regression so we proceed. 
+
+```{r pls, echo=TRUE, results='hide'}
+library(pls)
+start.time.pls <- Sys.time()
+pls.mod <- plsr(hf_score ~.,  data = allena.set, validation="CV")
+summary(pls.mod)
+pls.pred <- predict(pls.mod, testa.set, ncomp = 3)
+end.time.pls <- Sys.time()
+time.pls.mod <- end.time.pls - start.time.pls
+pls.mod$loading.weights #da qua posso già vedere quali sono le variabili considerate in ogni component
+
+# validationplot(pls.mod) #root mean squared error of prediction
+# validationplot(pls.mod, val.type = "MSEP") 
+# validationplot(pls.mod, val.type = "R2")  
+```
+```{r pls time and number of components, echo=TRUE}
+print(paste("Number of components is:", pls.mod$ncomp))
+```
+With PLS we obtain 35 components and not 40 as PCA. This is because of the inclusion of the response variable in the model. 
+Again, we see how just 3 components are enough to make the error plunge and the R^2 raise so we actually reduced the dimension of the problem. For completeness we show that also the optimal result of 10-fold cross validation is 3 components. 
+```{r cross-validation su pls, echo=TRUE,warning=FALSE, message=FALSE}
+library(tidyverse)
+library(caret)
+library(pls)
+set.seed(33)
+pls.cv <- train(hf_score ~., 
+                data = allena.set,
+                method = "pls", #partial least squares
+                trControl = trainControl("cv", number = 10)) 
+#remark:non specifichiamo tuneLenght perchè lasciamo che scelga da solo il n° di components e infatti ne sceglie 3 
+pls.cv
+```
+
+Now the objective here rather than the analysis of the variables is to evaluate the prediction. We consider only the first 3 components and here we have the comparison between actual and predicted values with the Partial Least Square regression.\ 
+```{r pls coefplot, echo=FALSE, results='hide',warning=FALSE, fig.align='center'}
+coefplot(pls.mod, ncomp = 1:3, lwd = 2, cex=2, legendpos = "topright" ,
+         main = "Regression Coefficients of PLSR ") 
+
+```
+\ 
+
+```{r predplot, echo=FALSE,warning=FALSE, fig.align='center'}
+predplot(pls.mod, newdata = testa.set, which = c("train", "validation", "test"), line=T,col = c("red"), ncomp=1:3, main="Fitting PLSR with a number of components from 1 to 3") 
+```
+
+From the plot we can see that by including more components the fit becomes more accurate and that again with just 3 components we have a rather reliable model.\  
+```{r pls mse, echo=FALSE, warning=FALSE, message=FALSE}
+library(Metrics)
+pls.mse <- mse(pls.pred, testa.set$hf_score) 
+print(paste("MSE with partial least square is: ",  round(pls.mse*100,3) , "%"))
+```
+
+We obtain a very low error and we can see that pls works really well but further comments will be made at the end when comparing all different learning methods. 
+
+## 2. MOST INFLUENTIAL VARIABLES FOR FREEDOM - SUPERVISED
+We know that PCA is useful in reducing the dimensions and to preprocess data but it is not a feature selection method, with PCA we are not selecting features but changing them completely, taking linear combinations of the original features.\ 
+
+Although this is is useful for efficiently performing exploratory analysis and solve the correlation issue, we might want to exploit all the information available (hence including the freedom index as well) to predict the freedom index for 2017. In fact, we started at the beginning with the objective to fit a regression model on the dataset but rightaway we've seen that this was not possible with OLS (ordinary least squares) because of the multicollinearity issue (we have more variables than observations and these variables are correlated). 
+So we have tackled the issue of collinearity in an unsupervised way with PCA now we want to do the same but this time in a supervised way including the freedom index.\ 
+
+To perform variable selection we could use best subset or forward stepwise selection (not backward selection because we have more variables than observations). In fact by doing so we would still get a sparse matrix as LASSO allows us to obtain BUT then the problem is again multicollinearity so because of this issue we cannot perform subset selection. So we can only perform a regularization method (because of collinearity) and one that allows us to get a sparse matrix (because we have many predictors) and only LASSO respects these 2 requirements. In the other markdown we performed also ridge regression which keeps into account all variables but it can be clearly seen that the erro is much greater. 
+
+# LASSO
+In our case LASSO is the go-to choice because it represents the compromise between tackling the collinearity issue (in which ridge regression usually is better at) while also obtaining a sparse matrix (it does take into the framework all variables but by shrinking some coefficients to 0 it actually performs also variable selection). In fact, it is crucial to get a sparse matrix because when the number of variables is greater than the number of observations the linear regression can still be modeled but the matrix of the coefficients should contain only a few non zero elements and that's what LASSO allows us to do. \ 
+ 
+```{r LASSO, echo=FALSE, results='hide', warning=FALSE, message=FALSE, fig.align='center'}
+library(glmnet)
+library(MatrixModels)
+hf_x <- model.matrix(hf_score ~. ,allena.set)[,-1]   
+hf_y <- allena.set$hf_score                          
+
+hf_test <- model.matrix(hf_score ~., testa.set)[,-1]  
+hf_test_y <- testa.set$hf_score
+
+set.seed(88) 
+#cross validation for best lambda
+cv.lasso <- cv.glmnet(hf_x, hf_y, alpha = 1) #k fold CV, default k=10
+cv.lasso
+plot(cv.lasso) 
+
+# It includes the cross-validation curve (red dotted line), and upper and lower standard deviation curves along the λ sequence (error bars). Two selected λ’s are indicated by the vertical dotted lines (see below).
+# lambda.min is the value of λ that gives minimum mean cross-validated error. The other λ saved is lambda.1se, which gives the most regularized model such that error is within one standard error of the minimum.
+```
+
+Here we have seen the overall picture by looking at the variation of the error (MSE) depending on the value of the tuning parameter lambda. Moreover, the graph highlights two lambda values, the minimum and the more highly regularized one (that is still within one standard error of the minimal error model). 
+Now we need to identify the optimal value of lambda and use it to perform the regression so 
+```{r LASSO best lambda, results='hide', echo=TRUE}
+best.lambda <- cv.lasso$lambda.min 
+start.time.lasso <- Sys.time()
+lasso.best <- glmnet(hf_x, hf_y, alpha = 1, lambda = best.lambda, standardize = F) 
+lasso.pred <- predict(lasso.best, s= best.lambda, newx=hf_test)
+end.time.lasso <- Sys.time()
+lasso.time <- end.time.lasso - start.time.lasso
+```
+```{r lasso comparison, echo=FALSE, results='hide'}
+lasso.comparison <- cbind(hf_test_y, round(lasso.pred,2))
+colnames(lasso.comparison) <- c("Actual","Predicted")
+head(lasso.comparison) 
+lasso.mse <- mse(lasso.pred, testa.set$hf_score)
+```
+
+```{r RSS LASSO, echo=FALSE}
+# TO CHECK THE MODEL PERFORMANCE 
+rss <- sum((lasso.pred - hf_test_y) ^ 2)
+tss <- sum((hf_test_y - mean(hf_test_y)) ^ 2)
+rsqq <- 1 - rss/tss
+print(paste("The best lambda value is: ",  round(best.lambda*100,3) , "%"))
+print(paste("R Squared with LASSO is: ",  round(rsqq*100,3) , "%"))
+print(paste("MSE with LASSO is: ",  round(lasso.mse*100,3) , "%"))
+
+```
+
+We can see how the LASSO regression performs better than the Partial Least Square achieving a slightly smaller test error. In fact, even if LASSO has the drawbacks of: \ 
+a) not being very good at handling variables that show a correlation between them (with respect to rr which would do it better if only we had less variables it could have been a better choice)\ 
+b) tuning down noisy factors which in this context where the freedom index is determined by many variables each contributing a little to the response, without staggering dominant variables, means that LASSO could end up classifying an actual signal just as noise relatively to the other variables. \ 
+On the other hand, the final performance is better (as the smallest test error testifies) because these downsides are being offset by the positive impact given by getting a sparse matrix so it seems that what is being eliminated is actually noise that it's not helping in predicting the freedom index (though it could be just a matter of the fact that we are not working with many observations)\ 
+Still, the difference is extremely small and LASSO regression would be our 1st best choice for the regression as discussed in the end.
+
+```{r LASSO most important variables , echo=FALSE, results='hide'}
+coef <- coef(cv.lasso) 
+variables <- coef[-1,1]
+most.imp <- subset(variables, subset=variables!=0)
+length(most.imp) 
+```
+```{r most important lasso variables, echo=FALSE}
+a <- as.matrix(sort(most.imp, decreasing = TRUE))  
+dimnames(a) <- list(sort(names(most.imp)),
+                    c("LASSO variables"))
+knitr::kable(a) 
+```
+
+
+As for the most important variables we can see that variables identified by LASSO are kind of different from the PCA ones. We would have been surprised if this did not happen as we are now also including the response variable hence providing more information. However, we can still find similarities as almost half of the top 10 are the same. Among these we have the control and the influence over freedom of expression as well as the possibility to move around freely and the disapperances (which we interpret as forced disappearances). 
+
+The difference between PLS and LASSO is not the inclusion of the response variable, since we have that in both LASSO and PLS. In PLS we identify principal components in a supervised way, we identify direction on which both the predictors and the response variable varies 
+In LASSO we are fitting a Instead, the difference is that while LASSO penalises 
+
+The thing that makes the results different is that PLS uses a combination of the predictors and components that we obtain are proportional to the correlation between Y and data matrix X. In LASSO, we use a shrinkage method which applys a penalty and doing this seeks for a sparse matrix. 
+Moreover, the reason why LASSO does better than Ridge Regression could be that here only few variables are really related to the response variable so that it has a lower test error than RR. 
+
+## 3. PREDICTION OF FREEDOM INDEX - TREE 
+We have already formulated predictions with linear regression through Partial least Squares and LASSO. Now, we want to adopt a different approach and try the regression with trees as the relationship between variables and the freedom index is not completely linear (assumptions of the linear model are being disregarded). The fact that data doesn't concentrate just on the mean but also right beside the sufficiency of the freedom index suggests that maybe a division of the feature space with trees could be helpful.
+Remark: again choosing a dataset with a small number of observations was not the best choice as this affects this model even more. 
+ 
+
+# REGRESSION DECISION TREE 
+Since our variables are correlated, we use trees to make predictions. We are going to compare a single tree before and after the pruning in order to see if the pruning is useful or not in improving the perfomance avoiding overfitting. Then, we proceed with Random Forest using both bagging and random forest trying to reduce variance. 
+We will not perform Boosting (which we know is in general the most performant) since we only have 40 observations and it seems impossible to create sequential trees having only such few observations (this could due to the fact that, since in boosting it gives more weight on observation for which the prediction is not correct, here we have that this happens for very few observations).
+
+We perform the regression through recursive partitioning where each predictors is chosen such that the final tree has the lowest RSS.\ 
+```{r decision tree, echo=TRUE,fig.align='center'}
+library(rpart)
+library(rpart.plot)
+start.time.ordt <- Sys.time()
+tree.fit <- rpart(hf_score ~ ., data=allena.set , method = 'anova')
+#summary(tree.fit)
+yhat.tree <- predict(tree.fit, newdata = testa.set)
+end.time.ordt <- Sys.time()
+time.single.tree <- end.time.ordt - start.time.ordt
+rpart.plot(tree.fit, main="Decision Regression Tree on all variables")
+```
+
+From the tree it results that the most significant input variable is the control over expression as this is the first variable that optimizes a reduction in the RSS. This is definitely legitimate and suggests that, as we said before with pca, personal factors are very important in feeling free. Moreover, also the second split is done using a personal factor variable, while the last split uses an economic one.\ 
+If this tree seems legitimate in the choice of the variables, it does not in the predicted values for the freedom index. In fact, we would expect those with an expression control lower than 5.7 (so not even what we could consider sufficiency) to end up having an even smaller freedom index. In other words, 7 (precisely 6.98) seems to be a rather high value for countries that control the expression of their citizens as well as 7.9 appears to be an overestimation for countries with lowe scores both in the expression of control and the rule of law. This is probably due to the fact that we don't have many observations so after the splitting the value will be averaged on a small number. For example again the case of low scores in expression_control we know that there are just 10 observations in that node so this affects the reliability of the result. We can notice already here that this model is not much promising but we will show below the errors between the tree on the test data and the pruned tree.   
+
+
+```{r printcp, echo=FALSE, results='hide', fig.align='center'}
+printcp(tree.fit) 
+```
+```{r error plot cp, echo=FALSE}
+plotcp(tree.fit) 
+```
+
+
+```{r rsq and number of splits plot, echo=FALSE,results='hide', eval=FALSE}
+par(mfrow=c(1,2)) 
+rsq.rpart(tree.fit) 
+```
+
+The tree is already very simple with few splits due to the fact that we have a small sample and many variables are correlated. However, we see from the analysis of the complexity parameter (printcp) that having 4 terminal nodes does not change the perfomance with respect to 3 terminal nodes (the xerror increase from 3 to 4 parameters). Hence we try with the pruning anyway to see if it improves the perfomance of the model. 
+We want to prune the tree by choosing authomatically the minimum xerror and we find 2 splits in min_cp:\ 
+```{r pruning , echo=FALSE, results='hide'}
+min_cp = tree.fit$cptable[which.min(tree.fit$cptable[,"xerror"]),"CP"]
+min_cp
+
+set.seed (3)
+pruned <- prune(tree.fit, cp = min_cp)
+#plotcp(pruned)  
+```
+
+```{r plot pruned tree, echo=TRUE, fig.align='center'}
+rpart.plot(pruned, main="Pruned Tree")
+```
+As expected we have one less terminal node which, as for interpretability, does not really change much as we said already that the tree was simple and straightforward since the beginning. So visually there's no advantage in terms of reduced complexity. Now we have to check the accuracy because the whole point is that pruning by reducing complexity should contrast overfitting hence improving the accuracy. So we compare the test errors obtained before and after the pruning:
+```{r comparison of the errors , echo=FALSE}
+library(Metrics)
+yhat.pruned <- predict(pruned, newdata = testa.set)
+
+tree.mse.pruned <- mse(yhat.pruned, testa.set$hf_score) 
+tree.mse.complete <- mse(yhat.tree, testa.set$hf_score)
+
+print(paste("MSE with complete tree is: ",  round(tree.mse.complete*100,3) , "%"))
+print(paste("MSE with pruned tree is: ",  round(tree.mse.pruned*100,3) , "%"))
+```
+
+As we expect the results don't really change much however it is to be noticed that the complete tree, before the pruning, performs better than the pruned tree. We imagine this to happen because the error is very low since the beginning and the overfitting issue is not being manifested just because 2017 data are rather similar to 2016 (as we said already because only one year has passed and countries are similar). Since datasets are similar, the test error always results quite small so by pruning the tree the cost in terms of loss of information in the reduction of complexity is not being offset by an advantage in terms of better predictions because predictions are already good since the beginning. Hence, again probably by choosing a dataset with greater difference in years or geographical proximity analysis maybe trees could have been more meaningful.
+So between the pruned tree and the complete tree we keep the complete one but we know that this is affected by high variance even more with our dataset that comprises a the small number of observations so we evaluate the performance with bagging and random forests.\ 
+```{r prediction plot with complete tree, echo=FALSE, fig.align='center'}
+plot(yhat.tree, testa.set$hf_score, xlab = "Predicted", ylab = "Actual",
+     main = "Predicted vs Actual: Single Tree Model, Test Data",
+     col = "dodgerblue", pch = 20)
+grid()
+abline(0,1, col="darkorange", lwd=2)
+```
+
+
+
+# RANDOM FOREST REGRESSION
+Since trees suffer from high variance, we now procede with Random Forest using both Bagging and Random Forest trying to reduce variance and, in the meantime, checking the difference between OOb error and Test error. In random forest there is no need to perform cross-validation since through the OOB error it is possible to estimate the test error in a very straightforward way. The OOB error is less biased than the MSE, but it is computed during the training phase, so for comparisons between different models we will use the Test Error. 
+
+**BAGGING**
+As we already said, trees suffer from high variance. With Bagging, that is a special case of Random Forest in which all predictors are considered, we are going to average the results obtained using different training set taken from the data in order to reduce variance, so we do not prune trees since variance reduction is done by averaging. 
+```{r bagging, echo=TRUE, warning=FALSE,message=FALSE}
+library(randomForest)
+library(Metrics)
+start.time.bagging <- Sys.time()
+bag.fit <- randomForest(hf_score ~ ., data=allena.set, mtry=ncol(allena.set[,-1]), importance=T )
+bag.predict <- predict(bag.fit, newdata = testa.set)
+end.time.bagging <- Sys.time()
+time.bagging <- end.time.bagging - start.time.bagging
+bag.mse <- mse(bag.predict, testa.set$hf_score)  
+oob.bag <- tail(bag.fit$mse,1) #stima unbaised del test error 
+
+```
+
+```{r bagging results, echo=FALSE}
+print(paste("MSE with Bagging is: ",  round(bag.mse*100,3) , "%"))
+print(paste("OOB error is: ",  round(oob.bag*100,3) , "%"))
+```
+
+A possible explanation cuold be that we have only 40 observations so the generalization on unseen data (that in the out of bag) decrease and oob error underfits giving a pessimistic result. OOB prediction is expected to exhibit worse performance because we are using a small number of observations (we have only 40 observations and OOB uses 1/3) and distribution of observations which we are analysing doesn't reflect the overall distribution. 
+The Test error's value is closer to the results obtained before with LASSO.
+We can visually see the variance reduction with respect to the single tree prediction:
+```{r bag prediction plot, echo=FALSE, fig.align='center'}
+plot(bag.predict, testa.set$hf_score, xlab = "Predicted", ylab = "Actual",
+     main = "Predicted vs Actual: Bagged Model, Test Data",
+     col = "dodgerblue", pch = 20)
+grid()
+abline(0,1, col="darkorange", lwd=2)
+```
+
+It is clear from the regression plot how the prediction is improved in bagging with respect to the single tree, this because with bagging we have better prediction at the cost of less interpretability (and not bias), infact average is not a tree. We can see how observations lie around the line (this did not happen with the single tree), so we have effectively reduced the variance. 
+Our next task is to build a matrix with Test and OOB errors for all possible number of variables between 1 and 71 in order to see how both test and oob error change  as the number of variables considered at each split varies. 
+
+
+```{r function for oob and test error plot, echo=FALSE}
+errors <- matrix(0, nrow = 71, ncol=2)
+for(mtry in 1:71){
+  rf.fit <- randomForest(hf_score ~., data = allena.set, mtry=mtry, importance=TRUE)
+  yhat.rf <- predict(rf.fit, newdata = testa.set)
+  errors[mtry,1] <- mean((yhat.rf - testa.set$hf_score)^2) # test error
+  errors[mtry,2] <- tail(rf.fit$mse,1) # oob error
+}
+colnames <- c("test error", "oob error")
+errors <- data.frame(errors)
+row.names(errors) <- 1:71
+names(errors) <- colnames
+err <- as.matrix(errors, decreasing = TRUE)
+#err[1:10,]
+knitr::kable(err[1:10,])
+min.test <- min(errors[,1]) 
+min.oob <- min(errors[,2])
+```
+
+```{r lowest errors and plot of oob and test errors, echo=FALSE, fig.align='center'}
+print(paste("The lowest test error is : ",  round(min.test*100,3) , "%"))
+print(paste("The lowest oob error is: ",  round(min.oob*100,3) , "%"))
+
+matplot(1:mtry , cbind(errors[,1],errors[,2]), pch=19 , col=c("red","blue"),type="b",ylab="Mean Squared Error",xlab="Number of Predictors Considered at each Split")
+legend("topright",legend=c("Test Error","Out of Bag Error"),pch=19, col=c("red","blue"))
+abline(min(errors[,2]),0)
+
+```
+This suggest that using a different number of variables at each split, we can reduce the test error and the oob error. To achieve this reduction we first need to find the corresponding number of variables to consider at each split and we can do this by looking at the plot of the two errors, where the OOB error and Test Error seem to be both minimized with a number of predictors around 20. 
+
+**RANDOM FOREST**
+With Random Forest we want to reduce the variance even more than bagging decorrelating trees. In order to do this, we use less variables than bagging at each split, precisely we take p/3 sample predictors (~ 24 variables) and we force trees to use always different predictors to grow a tree, so we will end up always with different trees and then results will be averaged. 
+It also possible to evaluate the importance of each variables used in the random forest regression (and this is valid also for bagging) looking at the increment in the oob MSE and the increment of node's purity that occur when removing that variable. The higher their values, the more important the variable is. 
+```{r random forest, echo=TRUE, results='hide', fig.align='center'}
+set.seed(1)
+m <- round(ncol(allena.set[,-1])/3, 0)
+start.time.rf <- Sys.time()
+rf.fit <- randomForest(hf_score ~ ., data=allena.set, mtry=m, importance=T )
+rf.predict <- predict(rf.fit, newdata=testa.set, importance=T) 
+end.time.rf<- Sys.time()
+time.rf <- end.time.rf - start.time.rf
+
+rf.mse <- mse(rf.predict, testa.set$hf_score) 
+oob.rf <- tail(rf.fit$mse, 1)
+varImpPlot(rf.fit)
+```
+
+Again, the two most important variables are the same that we found with the single tree (*pf_expression_control*, *pf_rol*), suggesting that removing these two would make the model less stable, so we could consider these two variable as determinant for the freedom score. Up to now, we confirm what we said before regarding the personal freedom over a collective one. 
+```{r randomforest prediction, echo=FALSE }
+print(paste("The random forest test error is : ",  round(rf.mse*100,3) , "%"))
+print(paste("The oob error with random forest is: ",  round(oob.rf*100,3) , "%"))
+```
+
+Using less predictors at each split, the test error in random forest is lower than the MSE associated with the bagged regression. This is also due to the fact we have a lot of correlated predictors, so with random forest we are decorellating trees reducing the variance. 
+```{r rf plot prediction vs attual, echo=FALSE, fig.align='center'}
+plot(rf.predict, testa.set$hf_score,
+     xlab = "Predicted", ylab = "Actual",
+     main = "Predicted vs Actual: Random Forest, Test Data",
+     col = "dodgerblue", pch = 20)
+grid()
+abline(0,1, col = "darkorange", lwd = 2)
+```
+
+```{r var importance, echo=FALSE, fig.align='center'}
+knitr::kable(importance(rf.fit))
+```
+
+Looking at this table, we see that highest values are associated to personal factors particularly to the freedom in expression and in the rule of law. Within economic sphere, different judicial systems have an impact on the freedom, suggesting that differences in freedom index between countries are also related to the collective behaviuour.
+
+
+
+## RESULTS 
+Our two main goals were to identify the determinants of freedom and to formulate a prediction for 2017. Hence, here following up with all the comment throughout the analysis, we further discuss the results according to these two objectives. 
+
+### Analysis of variables 
+The variables that result as important are quite different and this is inevitable when using different learning methods. Still, we can spot similarities among supervised learning methods (LASSO and trees) and these differ from unsupervised methods. This is due to the fact that pca looks at the variation of the data so the higher the variability in the values of a feature, the greater the role attributed to that variable. Yet, in our case, where we have features in the same unit and we did not scale (as it would introduce synthetic variance) small changes end up being amplified. Moreover, there are some variables like "conscription" that lends themselves naturally to higher variation as it is felt more of a problem in "militarized" countries whereas in the others it is not even taken into consideration as a problem. 
+However, overall we could say that from the supervised analysis the control over the freedom of expression and the rule of law seem to be the most important variables. With unsupervised learning instead we have a broader perspective taking into consideration also more legal and socioeconomical dimensions.  
+
+
+## EVALUATION OF LEARNING METHOD ALGORITHMS
+```{r RESULTS, echo=FALSE, results='hide'}
+(freedom.mse = data.frame(
+  Model = c("PLS","LASSO","Single Tree" , "Bagging",  "Random Forest"),
+  Time = c(time.pls.mod,lasso.time,time.single.tree,time.bagging,time.rf),
+  TestError = c(pls.mse,lasso.mse,tree.mse.complete, bag.mse, rf.mse)))
+```
+```{r knit results, echo=FALSE}
+knitr::kable(freedom.mse) 
+
+```
+
+The evaluation should be made mainly on the basis of accuracy and interpretability since the time consumed is not relevant as we don't have a huge dataset, the resources being employed are comparable. Hence, we can see how the hierarchy would be LASSO, PLS, Random Forest and then Bagged Trees. 
+
+Our go to choice for a learning method for prediction would be LASSO. In fact, not only it computes prediction quickly and with the lowest test error but it is also simpler and easier to interpret thank to the fact that it actually performs variable selection.
+
+The 2nd best choice and our best if the response variable would not have been included is by carrying out PLS. Here both pcr and pls seems to be promising as both have low test error but we choose pls over pcr because the test error is smaller. However is still noticeable how small the error is without including the response variable (in fact in pcr it's about 1.3%). However, PLS performs better and even if the computation is a little bit slower the accuracy is still remarkable. Also, in a sense PLS by mantaining all the variables (and not performing subset selection differntly from LASSO) could exploit the fact that in a way we do not have few variables that dominate in the explanation, all the variables are explaining a bit so we the true model seems to be inbetween a sparse model and one in which all the variables are playing a little role. The fact that LASSO performs better than PLS seems to indicate that the true model is more towards a sparse one (where PLS performs worst) but the difference is comparable.  
+
+**Remark**: we evaluate the different algorithms on the basis of the test error as this is the best choice available however in its absolute value is probably not so reliable in our case. In fact, it is kind of obvious that we will get very low test error since we are working with a dataset made up of a small number of observations and of countries that are geographically proximate as well as similar for values/rights so we don't expect much change between 2016 and 2017 with the result that overfitting issues may not be displayed. 
+
+**Remark**: overall, the limits of our analysis that all contribute to having a high variance and risk of overfitting for our learning method are: 
+1. small n (40 observations)
+2. n < p 
+3. collinear independent variables 
+4. geographically and temporal proximity of the datasets (the overfitting is not "unmasked" only because the training set is very similar to the training dataset due to the fact that we are focusing just on Europe and on a specific close timeframe) 
+
+With trees we've shown how, despite some doubts at the beginning, it is definitely better to exploit the linear structure of the data as this leads to more accurate results. In our case the loss of accuracy and increase of variance (intrinsic with trees in general but even more risky for our small dataset) is not even offset by an easier readability. In fact, ordinary trees definitely don't provide a satisfactory performance so one should go with bagging and random forests but then it would mean to loose the only perk of trees. So in our case definitely trees are not helpful but we still include them to display the difference and make a comparison. 
+
+
+
+[id]:https://www.kaggle.com/gsutters/the-human-freedom-index?select=hfi_cc_2019.csv
